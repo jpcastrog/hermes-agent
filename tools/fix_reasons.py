@@ -69,7 +69,7 @@ CLAUDE_LOGIN_EXPIRED = "claude_login_expired"
 CLAUDE_USAGE_CAP = "claude_usage_cap"
 BROWSER_MISSING = "browser_missing"
 PROFILE_LOCKED = "profile_locked"                    # a real browser profile lock: Windows only
-BROWSER_EXTENSION_MISSING = "browser_extension_missing"  # Moe's Chrome extension not installed / not connected
+BROWSER_EXTENSION_MISSING = "browser_extension_missing"  # Parapeto's Chrome extension not installed / not connected
 # Not a setting at all: a page step only the person can take (a passkey, a CAPTCHA, an identity check),
 # met on a turn nobody is at. The job reports it; nothing on this Mac fixes it (tools/browser_handoff_tool.py).
 PERSON_NEEDED = "person_needed"

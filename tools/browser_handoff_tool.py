@@ -12,7 +12,7 @@ Routes, first that works:
    front (Chrome cannot give a headless browser a window without a relaunch). The result says whether
    the form made it (``form_state``). After ``done=true`` the window is HIDDEN, not restarted -- the page
    the person finished on (a cleared CAPTCHA) stays live -- and Moe carries on in the background.
-2. ``chrome`` -- the extension lane is connected: the URL opens in Moe's own tab group in the
+2. ``chrome`` -- the extension lane is connected: the URL opens in Parapeto's own tab group in the
    person's Chrome (signed in as them; Moe's own browser's page state does not carry over). The
    extension never focuses a window by design, so the tab is there but not raised (``front: false``).
 3. ``default_browser`` -- the URL opens in the person's default browser, with the explicit note that
@@ -180,7 +180,7 @@ def _sign_in_link_route(reason: str, url: str, task: str, step: Optional[dict] =
 
 
 def _open_in_chrome_group(bridge: dict, url: str) -> Optional[str]:
-    """Open ``url`` in Moe's tab group through the extension's relay; error string or None."""
+    """Open ``url`` in Parapeto's tab group through the extension's relay; error string or None."""
     from websockets.sync.client import connect
     try:
         with connect(bridge["ws_url"], open_timeout=5, close_timeout=2) as ws:
@@ -294,7 +294,7 @@ def _hand_back(task_id: str) -> str:
                           "macOS did not hide Moe's window, so it may still be on their screen: if they mind, they can "
                           "press Cmd-H in it; it goes out of sight by itself the next time it starts."))
     elif route == ROUTE_CHROME:
-        out["next"] = ("Carry on with browser_exec(where=\"chrome\"): the page is in Moe's tab group in the person's "
+        out["next"] = ("Carry on with browser_exec(where=\"chrome\"): the page is in Parapeto's tab group in the person's "
                        "Chrome. Read it first; they may have moved it on.")
     else:
         out["next"] = ("The person worked in their own browser, which Moe cannot read. Ask what they finished if it "
@@ -472,11 +472,11 @@ def browser_handoff(reason: str = "", url: str = "", resume_hint: str = "", done
 BROWSER_HANDOFF_SCHEMA = {
     "name": "browser_handoff",
     "description": (
-        "Show the person the page Moe is working on (pass its url), so they can do a step only they can do -- a passkey or "
+        "Show the person the page Parapeto is working on (pass its url), so they can do a step only they can do -- a passkey or "
         "security key, a CAPTCHA, an identity check, an approval -- or whenever they ask to see it ('open that so "
-        "I can approve it'). Moe's own browser runs out of sight; this brings it up in a window in front of them "
+        "I can approve it'). Parapeto's own browser runs out of sight; this brings it up in a window in front of them "
         "on the same tab with the same sign-ins (or, if that cannot be done, opens the page in their Chrome via "
-        "Moe's tab group, else in their default browser -- the result's route and session say which, and what "
+        "Parapeto's tab group, else in their default browser -- the result's route and session say which, and what "
         "carried over). Then tell them in one line what to do and END YOUR TURN: they say when they are done, and "
         "you call browser_handoff(done=true) and carry on in the same browser_exec session. The rule: whenever a "
         "page needs a check only the person can complete, use this -- whether or not a result says needs_person "

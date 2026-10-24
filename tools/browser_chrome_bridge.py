@@ -1,4 +1,4 @@
-"""Native-messaging host for the Memoe Chrome extension: a CDP relay into Moe's own tab group.
+"""Native-messaging host for the Parapeto Chrome extension: a CDP relay into Parapeto's own tab group.
 
 Chrome starts this process when the extension (``extensions/chrome``) calls
 ``chrome.runtime.connectNative("app.memoe.chrome_bridge")``, and talks to it over

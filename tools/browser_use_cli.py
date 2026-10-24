@@ -786,7 +786,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     """Run Python code through the browser-use CLI, and return its output.
 
     ``where`` picks the lane (tools.browser_chrome_extension): "own" = Hermes' own browser
-    (default), "chrome" = Moe's tab group in the owner's real Chrome via the Memoe extension."""
+    (default), "chrome" = Parapeto's tab group in the owner's real Chrome via the Parapeto extension."""
     from agent.redact import redact_sensitive_text
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
@@ -924,13 +924,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                 if wall:
                     chrome_lane.remember_blocking_host(wall[1])
                 if not presence.get("live"):
-                    result["hint"] = (f"This site blocks Moe's own browser, and this is {presence.get('why') or 'a turn nobody started live'}, "
+                    result["hint"] = (f"This site blocks Parapeto's own browser, and this is {presence.get('why') or 'a turn nobody started live'}, "
                                       "not the person's own live turn, so it was not retried in the person's Chrome. Report the block.")
                 elif bridge is not None:
-                    result["hint"] = ("This site blocks Moe's own browser. Run the same code again with where=\"chrome\" "
-                                      "— it runs in Moe's own tab group in the owner's real Chrome.")
+                    result["hint"] = ("This site blocks Parapeto's own browser. Run the same code again with where=\"chrome\" "
+                                      "— it runs in Parapeto's own tab group in the owner's real Chrome.")
                 else:
-                    result["hint"] = "This site blocks Moe's own browser. " + chrome_lane.not_connected_message()
+                    result["hint"] = "This site blocks Parapeto's own browser. " + chrome_lane.not_connected_message()
     ladder_said = (result.get("captcha") or {}).get("outcome") not in (None, "passed")
     if lane == chrome_lane.LANE_OWN and not ladder_said \
             and not (result.get("blocked_by") and bridge is not None and presence.get("live")):
@@ -1082,10 +1082,10 @@ def _dynamic_schema_overrides() -> dict:
         props = dict(params["properties"])
         props["where"] = {
             "type": "string", "enum": ["own", "chrome"],
-            "description": ("Which browser runs the code. Omit it and Hermes picks: Moe's own browser, except "
-                            "sites known to block it, which go to the owner's Chrome. \"own\" = Moe's own "
-                            "browser (background work). \"chrome\" = a tab in Moe's own tab group in the owner's "
-                            "real Chrome, via the Memoe extension — use it when a result says blocked_by, or when "
+            "description": ("Which browser runs the code. Omit it and Hermes picks: Parapeto's own browser, except "
+                            "sites known to block it, which go to the owner's Chrome. \"own\" = Parapeto's own "
+                            "browser (background work). \"chrome\" = a tab in Parapeto's own tab group in the owner's "
+                            "real Chrome, via the Parapeto extension — use it when a result says blocked_by, or when "
                             "the owner asks you to work in their Chrome. It never touches the owner's other tabs. "
                             "Keep the same where for every call of one task."),
         }

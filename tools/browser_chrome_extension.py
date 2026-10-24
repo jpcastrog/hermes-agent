@@ -1,13 +1,13 @@
-"""The Chrome-extension lane for ``browser_exec``: Moe's own tab group in the owner's real Chrome.
+"""The Chrome-extension lane for ``browser_exec``: Parapeto's own tab group in the owner's real Chrome.
 
 ``browser_exec`` normally drives Hermes' own browser (Chrome for Testing signed in
 with a copy of the owner's cookies). Some sites fingerprint that browser and refuse
 it — measured: Skyscanner (PerimeterX "press & hold"), Trip.com, x.com, and
 Cloudflare's "Just a moment" on Product Hunt. For those, and whenever the owner asks
 Moe to work in their Chrome, the same ``browser_exec`` code runs against the owner's
-real Chrome through the Memoe extension (``extensions/chrome``) and its native host
+real Chrome through the Parapeto extension (``extensions/chrome``) and its native host
 (:mod:`tools.browser_chrome_bridge`), which exposes a CDP endpoint whose only pages
-are the tabs in Moe's tab group.
+are the tabs in Parapeto's tab group.
 
 This module holds the lane decision (:func:`choose_lane`), bot-block detection on
 the own-browser lane (:func:`detect_block`), the bridge handshake file
@@ -608,7 +608,7 @@ def install_native_host(browser_dir: str, *, hermes_home: Optional[str] = None, 
         return "'" + str(s).replace("'", "'\"'\"'") + "'"
 
     launcher.write_text(
-        "#!/bin/sh\n# Memoe Chrome bridge: started by Chrome for the Memoe extension only.\n"
+        "#!/bin/sh\n# Parapeto Chrome bridge: started by Chrome for the Parapeto extension only.\n"
         f"HERMES_HOME={q(home)}\nexport HERMES_HOME\nunset PYTHONPATH PYTHONHOME\n"
         f"exec {q(py)} {q(bridge_py)} \"$@\"\n", encoding="utf-8")
     os.chmod(launcher, 0o700)
