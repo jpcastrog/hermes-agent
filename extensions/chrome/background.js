@@ -1,7 +1,7 @@
-// Memoe — Moe in your Chrome. MV3 service worker.
+// Parapeto in your Chrome. MV3 service worker.
 //
 // Moe drives the owner's REAL Chrome, but only inside a tab group of its own
-// ("Moe"). The rule the whole extension enforces, in one place:
+// ("Parapeto"). The rule the whole extension enforces, in one place:
 //
 //     A tab is Moe's if and only if it sits in a group this extension created.
 //
@@ -15,7 +15,7 @@
 // Input is chrome.debugger (CDP Input.dispatchMouseEvent / dispatchKeyEvent),
 // so clicks and keys arrive with isTrusted=true — content-script events are
 // isTrusted=false, which is exactly what PerimeterX-class scripts check.
-// The price is Chrome's "Memoe started debugging this browser" bar while a tab
+// The price is Chrome's "Parapeto in your Chrome started debugging this browser" bar while a tab
 // is attached; its Cancel button detaches everything (the owner's off switch).
 //
 // Transport: native messaging to the host `app.memoe.chrome_bridge`. Only an
@@ -23,7 +23,7 @@
 // and no web page can reach either end — there is no open port on this side.
 
 const HOST = "app.memoe.chrome_bridge";
-const GROUP_TITLE = "Moe";
+const GROUP_TITLE = "Parapeto";
 const GROUP_COLOR = "purple";
 const PROTOCOL = 1;
 
@@ -39,7 +39,7 @@ function urlAllowed(url) {
 }
 
 function refuseUrl(url) {
-  const err = new Error(`${String(url).slice(0, 80)} is refused in the owner's Chrome: Moe's tabs open only http, https and about:blank`);
+  const err = new Error(`${String(url).slice(0, 80)} is refused in the owner's Chrome: Parapeto's tabs open only http, https and about:blank`);
   err.code = "url_refused";
   return err;
 }
@@ -76,7 +76,7 @@ async function isOwned(tabId) {
 
 async function requireOwned(tabId) {
   if (!(await isOwned(tabId))) {
-    const err = new Error(`tab ${tabId} is not in Moe's tab group; Moe never touches the person's own tabs`);
+    const err = new Error(`tab ${tabId} is not in Parapeto's tab group; Parapeto never touches the person's own tabs`);
     err.code = "not_owned";
     throw err;
   }

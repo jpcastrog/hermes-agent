@@ -116,7 +116,7 @@ def url_allowed(url: Any) -> bool:
 
 def check_url(url: Any) -> None:
     if not url_allowed(url):
-        raise RelayError(f"{str(url)[:80]!r} is refused in the owner's Chrome: Moe's tabs open only http, https "
+        raise RelayError(f"{str(url)[:80]!r} is refused in the owner's Chrome: Parapeto's tabs open only http, https "
                          "and about:blank (no file:, chrome:, chrome-extension:, view-source:, javascript: or data:)",
                          -32602)
 

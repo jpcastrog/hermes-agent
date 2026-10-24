@@ -1642,7 +1642,7 @@ def usage_limit_sentence(provider: Any, reset_at: Optional[float], *, now: Optio
     nobody stated.
     """
     who = _provider_in_words(provider)
-    switch = "switch Moe to another plan or key in Settings › Brain to keep going now."
+    switch = "switch Parapeto to another plan or key in Settings › Brain to keep going now."
     if reset_at is None:
         return ("I've hit the usage limit on %s. It resets later, and I can't tell exactly "
                 "when — %s" % (who, switch))

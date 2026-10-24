@@ -131,7 +131,7 @@ def test_a_retry_after_of_hours_is_not_slept_on_and_is_said_truthfully(agent):
     assert seen.api == 1, "retried a spent plan %d times" % seen.api
     said = result["final_response"]
     assert said == ("I've hit the usage limit on your Claude plan. It resets around 4:00 PM, "
-                    "in about 5 hours — or switch Moe to another plan or key in "
+                    "in about 5 hours — or switch Parapeto to another plan or key in "
                     "Settings › Brain to keep going now."), said
     assert "10 minutes" not in said and "600" not in said
     assert result["failed"] is True and result["failure_retryable"] is False

@@ -135,8 +135,8 @@ def bridge_warnings(bridge: Optional[dict]) -> list:
     if ext.get("fileAccess") is True:
         # Measured TRUE for an unpacked load. The URL policy refuses file: regardless; the switch
         # is still one fewer thing between a bug and the person's files.
-        warnings.append({"code": "file_access_on", "text": "Moe's Chrome extension is allowed to open files on this Mac. "
-                         "Moe never uses that; turn it off in Chrome › Extensions › Memoe › \"Allow access to file URLs\"."})
+        warnings.append({"code": "file_access_on", "text": "Parapeto's Chrome extension is allowed to open files on this Mac. "
+                         "Parapeto never uses that; turn it off in Chrome › Extensions › Parapeto › \"Allow access to file URLs\"."})
     return warnings
 
 
@@ -147,9 +147,9 @@ def not_connected_message() -> str:
     from tools.fix_reasons import host_app_name
     from tools.fix_reasons_macos import THEN
     app = host_app_name()
-    return (f"Moe's extension for Google Chrome isn't connected, so nothing ran in your Chrome. To fix it, add it "
+    return (f"Parapeto's extension for Google Chrome isn't connected, so nothing ran in your Chrome. To fix it, add it "
             f"from {app} › Connections › Chrome (or open Chrome if it's closed), {THEN}. "
-            "(Moe can use where=\"own\" to work in its own browser instead.)")
+            "(Parapeto can use where=\"own\" to work in its own browser instead.)")
 
 
 def not_connected_error() -> str:
@@ -157,7 +157,7 @@ def not_connected_error() -> str:
     ``owner`` is the app (its install flow is the fix), ``pane`` stays null (no System Settings pane)."""
     from tools.fix_reasons import BROWSER_EXTENSION_MISSING, OWNER_APP, fix_error
     return fix_error(not_connected_message(), BROWSER_EXTENSION_MISSING, owner=OWNER_APP,
-                     subject="Memoe extension for Google Chrome", retry=True,
+                     subject="Parapeto extension for Google Chrome", retry=True,
                      extension_id=EXTENSION_ID, native_host=NATIVE_HOST_NAME)
 
 
@@ -583,7 +583,7 @@ MAC_BROWSER_DIRS = {
 def host_manifest(host_path: str, extension_id: str = EXTENSION_ID) -> dict:
     return {
         "name": NATIVE_HOST_NAME,
-        "description": "Memoe: lets Moe work in its own tab group in this browser",
+        "description": "Parapeto: lets Parapeto work in its own tab group in this browser",
         "path": host_path,
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{extension_id}/"],

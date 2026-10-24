@@ -2958,12 +2958,12 @@ OPTIONAL_ENV_VARS = {
         "Browser Use API key", "https://browser-use.com/",
         tools=["browser_navigate", "browser_click"]),
     "CAPSOLVER_API_KEY": _tool(
-        "CapSolver API key: lets Moe's browser solve reCAPTCHA image grids itself (browser.captcha.solver: "
-        "capsolver). Only the challenge image is sent; Moe clicks the answer", "CapSolver API key",
+        "CapSolver API key: lets Parapeto's browser solve reCAPTCHA image grids itself (browser.captcha.solver: "
+        "capsolver). Only the challenge image is sent; Parapeto clicks the answer", "CapSolver API key",
         "https://dashboard.capsolver.com/", tools=["browser_exec"]),
     "NOPECHA_API_KEY": _tool(
-        "NopeCHA API key: lets Moe's browser solve reCAPTCHA / hCaptcha image grids itself (browser.captcha.solver: "
-        "nopecha). Only the challenge image is sent; Moe clicks the answer", "NopeCHA API key",
+        "NopeCHA API key: lets Parapeto's browser solve reCAPTCHA / hCaptcha image grids itself (browser.captcha.solver: "
+        "nopecha). Only the challenge image is sent; Parapeto clicks the answer", "NopeCHA API key",
         "https://nopecha.com/manage", tools=["browser_exec"]),
     "FIRECRAWL_BROWSER_TTL": _tool(
         "Firecrawl browser session TTL in seconds (optional, default 300)",

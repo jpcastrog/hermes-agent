@@ -253,7 +253,7 @@ def test_where_chrome_points_the_harness_at_the_bridge_and_nowhere_else(tmp_path
 def test_where_chrome_without_the_extension_fails_closed_with_a_fix_code(cli):
     out = json.loads(bu.browser_exec('print(page_info())', task_id="t", where="chrome"))
     assert out["code"] == "browser_extension_missing" and out["owner"] == "app" and out["pane"] is None
-    assert out["subject"] == "Memoe extension for Google Chrome" and out["retry"] is True
+    assert out["subject"] == "Parapeto extension for Google Chrome" and out["retry"] is True
     assert out["extension_id"] == lane.EXTENSION_ID and out["native_host"] == "app.memoe.chrome_bridge"
     assert "cmd" not in cli and cli["route"] == 0         # nothing ran anywhere
 
