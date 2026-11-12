@@ -393,17 +393,25 @@ def scope_refusal(tool_name: str, args: Optional[dict], scope: Optional[frozense
     """Why ``tool_name`` must not run under ``scope``, or ``None`` to run it.
 
     Defence in depth behind the narrowed listing: a call for a name that was
-    never listed is refused, and so is a ``tool_call`` whose target is outside
+    never listed is refused, and so is a ``tool_call`` with any entry outside
     the scope (``tool_call`` would otherwise reach any deferred tool in this
-    process's whole registry)."""
+    process's whole registry). The entries are read the way the dispatcher
+    reads them (``normalize_tool_call_entries``: ``calls[]`` first, the legacy
+    single ``name`` only without it), so the check and the call agree on what
+    runs; arguments it cannot read are refused."""
     if scope is None:
         return None
     if tool_name not in scope:
         return f"{tool_name} is not available in this session"
     if tool_name == "tool_call":
-        target = str((args or {}).get("name") or "").strip()
-        if target not in scope:
-            return f"{target or 'that tool'} is not available in this session"
+        from tools.tool_search_validation import normalize_tool_call_entries
+
+        entries, error = normalize_tool_call_entries(dict(args or {}))
+        if error:
+            return error
+        outside = [e["name"] for e in entries if e.get("name") not in scope]
+        if outside:
+            return f"{', '.join(outside)} is not available in this session"
     return None
 
 

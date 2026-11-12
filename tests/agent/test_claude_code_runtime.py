@@ -1481,6 +1481,30 @@ class TestARequestsToolScope:
         assert third is not second and third.tool_scope is None
         assert "--mcp-config" in third._build_command(resume=False)
 
+    def test_a_request_without_the_header_spawns_exactly_as_before(self):
+        """No mark, no change: the argv and mcp-config the child got before
+        tool scopes existed (claude-code-runtime 89a04422ac), flag for flag."""
+        from agent.transports.claude_code_session import NATIVE_OS_TOOLS
+
+        # Spelled out (not imported) so this exact test also runs on the base revision.
+        agent = self._agent("plain", ("terminal", "todo_list"), restricted=None)
+        _turn(agent)
+        session = agent._claude_code_session
+        argv = session._build_command(resume=False)
+        start = argv.index("--tools")
+        assert argv[start:start + 8] == [
+            "--tools", "TodoWrite,ToolSearch",
+            "--disallowedTools", ",".join(NATIVE_OS_TOOLS),
+            "--mcp-config", session._mcp_config_path,
+            "--allowedTools", "TodoWrite,ToolSearch,mcp__hermes-tools",
+        ]
+        env = json.loads(
+            Path(session._mcp_config_path).read_text()
+        )["mcpServers"]["hermes-tools"]["env"]
+        assert "HERMES_MCP_TOOL_SCOPE" not in env
+        assert getattr(session, "tool_scope", None) is None
+        assert session._tool_bridge.allowed_tools == ("todo_list",)
+
     def test_a_spare_is_keyed_by_scope(self):
         full = self._agent("a", ("terminal",), restricted=None)
         bare = self._agent("b", ("terminal",), restricted=())

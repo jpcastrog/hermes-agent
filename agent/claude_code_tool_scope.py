@@ -44,7 +44,8 @@ def rebuild_if_out_of_scope(agent, entry: Any, registry_key: Optional[str]) -> b
     The scope is baked in at spawn (mcp-config, ``--tools``). A no-tools child must never serve a
     full request, nor a full child a no-tools one. Called holding the entry's turn lock; on a
     failed rebuild the entry is dropped and the lock released before the error propagates. The
-    CLI transcript is resumed by the new child as usual.
+    CLI transcript is resumed by the new child as usual. Narrowed requests should use their own
+    session key: one key shared by narrowed and full requests rebuilds the child on every switch.
     """
     from agent import claude_code_runtime as rt
 

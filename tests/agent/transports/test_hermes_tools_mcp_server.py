@@ -809,20 +809,57 @@ class TestARequestsToolScope:
         server = self._build(monkeypatch, ["web_search", "ask_delegate", "terminal"], "")
         assert server.tools == {}
 
+    def _real_server(self, monkeypatch, scope):
+        """The real SDK server, with the real tool_call schema: arguments go
+        through the SDK's own argument model, as they do from the CLI."""
+        import model_tools
+        from agent.transports import hermes_tools_mcp_server as m
+        from agent.transports.hermes_tool_bridge import BRIDGE_SOCKET_ENV, BRIDGE_TOKEN_ENV
+        from tools.tool_search import TOOL_CALL_NAME, bridge_tool_schemas
+
+        tool_call = next(d for d in bridge_tool_schemas(2) if d["function"]["name"] == TOOL_CALL_NAME)
+        plain = [{"type": "function", "function": {"name": n, "parameters": {
+            "type": "object", "properties": {"query": {"type": "string"}}}}}
+            for n in ("web_search", "ask_delegate")]
+        monkeypatch.setattr(m, "discover_external_mcp_servers", lambda: [])
+        monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [tool_call, *plain])
+        monkeypatch.delenv(BRIDGE_SOCKET_ENV, raising=False)
+        monkeypatch.delenv(BRIDGE_TOKEN_ENV, raising=False)
+        monkeypatch.setenv(m.TOOL_SCOPE_ENV, scope)
+        return m._build_server("claude-code")
+
+    @staticmethod
+    def _call(server, name, arguments):
+        import asyncio
+
+        result = asyncio.run(server.call_tool(name, arguments))
+        return "".join(getattr(b, "text", "") for b in result.content)
+
     def test_tool_call_cannot_reach_a_tool_outside_the_scope(self, monkeypatch):
-        import json as _json
         import model_tools
 
         ran = []
         monkeypatch.setattr(model_tools, "handle_function_call",
                             lambda name, args: ran.append((name, args)) or "ran")
-        server = self._build(monkeypatch, ["tool_call", "web_search", "ask_delegate"], "tool_call,web_search")
-        assert set(server.tools) == {"tool_call", "web_search"}
-        out = _json.loads(server.tools["tool_call"](name="ask_delegate", arguments={"q": "x"}))
-        assert out["tool"] == "tool_call" and "ask_delegate" in out["error"]
-        assert ran == []
-        assert server.tools["tool_call"](name="web_search", arguments={"query": "x"}) == "ran"
-        assert ran == [("tool_call", {"name": "web_search", "arguments": {"query": "x"}})]
+        server = self._real_server(monkeypatch, "tool_call,web_search")
+        # In scope: a deferred tool stays reachable through tool_call.
+        out = self._call(server, "tool_call", {"calls": [{"name": "web_search", "arguments": {"query": "x"}}]})
+        assert out == "ran"
+        assert ran == [("tool_call", {"calls": [{"name": "web_search", "arguments": {"query": "x"}}]})]
+        # One entry outside the scope refuses the whole batch, before anything runs.
+        out = self._call(server, "tool_call", {"calls": [
+            {"name": "web_search", "arguments": {"query": "x"}},
+            {"name": "ask_delegate", "arguments": {"query": "x"}}]})
+        assert "ask_delegate" in out and "not available" in out
+        assert len(ran) == 1
+
+    def test_a_tool_call_entry_is_judged_by_calls_not_a_stray_name(self):
+        from agent.transports.hermes_tools_mcp_server import scope_refusal
+
+        scope = frozenset({"tool_call", "web_search"})
+        sneaky = {"name": "web_search", "calls": [{"name": "ask_delegate", "arguments": {}}]}
+        assert "ask_delegate" in scope_refusal("tool_call", sneaky, scope)
+        assert scope_refusal("tool_call", {"calls": "not json"}, scope)
 
     def test_a_call_for_a_name_outside_the_scope_is_refused(self):
         from agent.transports.hermes_tools_mcp_server import scope_refusal
