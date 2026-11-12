@@ -776,3 +776,57 @@ class TestQuietToolProbes:
         finally:
             reg.CHECK_FN_FALSE_LOG_LEVEL = old
             reg.invalidate_check_fn_cache()
+
+
+class TestARequestsToolScope:
+    """X-Hermes-Enabled-Toolsets narrows a request's tools. Under claude_code
+    the tools live in this server, built from the whole registry, so the
+    narrowed names arrive as HERMES_MCP_TOOL_SCOPE and the server must honour
+    them: list only those, and refuse anything else that is asked for."""
+
+    def _build(self, monkeypatch, names, scope):
+        import mcp.server as mcp_server
+        import model_tools
+        from agent.transports import hermes_tools_mcp_server as m
+        from agent.transports.hermes_tool_bridge import BRIDGE_SOCKET_ENV, BRIDGE_TOKEN_ENV
+
+        monkeypatch.setattr(mcp_server, "MCPServer", _RecordingServer)
+        monkeypatch.setattr(m, "discover_external_mcp_servers", lambda: [])
+        monkeypatch.setattr(
+            model_tools, "get_tool_definitions",
+            lambda **kw: [{"type": "function", "function": {"name": n, "parameters": {}}} for n in names],
+        )
+        monkeypatch.delenv(BRIDGE_SOCKET_ENV, raising=False)
+        monkeypatch.delenv(BRIDGE_TOKEN_ENV, raising=False)
+        monkeypatch.setenv(m.TOOL_SCOPE_ENV, scope)
+        return m._build_server("claude-code")
+
+    def test_only_the_scoped_names_are_listed(self, monkeypatch):
+        server = self._build(monkeypatch, ["web_search", "ask_delegate", "terminal"], "web_search")
+        assert set(server.tools) == {"web_search"}
+
+    def test_an_empty_scope_lists_nothing(self, monkeypatch):
+        server = self._build(monkeypatch, ["web_search", "ask_delegate", "terminal"], "")
+        assert server.tools == {}
+
+    def test_tool_call_cannot_reach_a_tool_outside_the_scope(self, monkeypatch):
+        import json as _json
+        import model_tools
+
+        ran = []
+        monkeypatch.setattr(model_tools, "handle_function_call",
+                            lambda name, args: ran.append((name, args)) or "ran")
+        server = self._build(monkeypatch, ["tool_call", "web_search", "ask_delegate"], "tool_call,web_search")
+        assert set(server.tools) == {"tool_call", "web_search"}
+        out = _json.loads(server.tools["tool_call"](name="ask_delegate", arguments={"q": "x"}))
+        assert out["tool"] == "tool_call" and "ask_delegate" in out["error"]
+        assert ran == []
+        assert server.tools["tool_call"](name="web_search", arguments={"query": "x"}) == "ran"
+        assert ran == [("tool_call", {"name": "web_search", "arguments": {"query": "x"}})]
+
+    def test_a_call_for_a_name_outside_the_scope_is_refused(self):
+        from agent.transports.hermes_tools_mcp_server import scope_refusal
+
+        assert scope_refusal("ask_delegate", {}, frozenset({"web_search"}))
+        assert scope_refusal("web_search", {}, frozenset()) is not None
+        assert scope_refusal("web_search", {}, frozenset({"web_search"})) is None

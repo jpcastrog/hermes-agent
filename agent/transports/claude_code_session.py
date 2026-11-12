@@ -85,6 +85,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
+from agent.transports.claude_code_session_tools import hermes_mcp_allow_rules, native_tool_flags
 
 logger = logging.getLogger(__name__)
 
@@ -338,35 +339,6 @@ def resolve_permission(
     if native_tools:
         return mode, legacy_allowed, ()
     return mode, _INERT_NATIVE_TOOLS, NATIVE_OS_TOOLS
-
-
-def hermes_mcp_allow_rules(permission_mode: str) -> list[str]:
-    """``--allowedTools`` entries for the hermes-tools MCP server.
-
-    * ``acceptEdits`` (auto): the whole server — every tool is already gated
-      by Hermes' own policy (command guards, file policy, hooks).
-    * ``default`` (approval-required): every tool except
-      :data:`GATED_HERMES_TOOLS`, which fall through to ``can_use_tool`` and
-      Hermes' approval prompt.
-
-    The bridged agent-loop tools are named here too. They are dispatched by
-    the parent process through ``_invoke_tool`` — the same hooks and the same
-    policy as any Hermes turn — so routing them through the CLI's approval
-    prompt as well would gate them twice, and in a gateway context (no
-    approver) would deny delegation outright.
-    """
-    if permission_mode != "default":
-        return [f"mcp__{HERMES_TOOLS_MCP_SERVER_NAME}"]
-    from agent.transports.hermes_tool_bridge import BRIDGED_TOOLS
-    from agent.transports.hermes_tools_mcp_server import exposed_tools_for_profile
-
-    gated = set(GATED_HERMES_TOOLS)
-    names = tuple(exposed_tools_for_profile("claude-code")) + BRIDGED_TOOLS
-    return [
-        f"{_MCP_TOOL_PREFIX}{name}"
-        for name in dict.fromkeys(names)
-        if name not in gated
-    ]
 
 
 def hermes_tool_name(wire_name: str) -> str:
@@ -947,6 +919,7 @@ def write_mcp_config(
     bridge_token: Optional[str] = None,
     bridge_tools: Optional["tuple[str, ...] | list[str]"] = None,
     grounding_key: Optional[str] = None,
+    tool_scope: Optional["frozenset[str] | set[str] | tuple[str, ...] | list[str]"] = None,
 ) -> str:
     """Write the ``--mcp-config`` JSON that launches ``hermes_tools_mcp_server``.
 
@@ -973,6 +946,7 @@ def write_mcp_config(
     block's env, and this file is readable by anything running as this user.
     What actually bounds the bridge is its server-side allowlist and the
     dispatcher's re-check against the agent's own tool surface.
+    ``tool_scope`` (a request's narrowed tools) goes to the server, which lists only those.
     """
     py = python_executable or sys.executable
     root = project_root or os.path.dirname(
@@ -1014,6 +988,10 @@ def write_mcp_config(
         # two ceilings that have to disagree — this one and MCP_TOOL_TIMEOUT
         # in the CLI's own environment — are visible in the same artefact.
         server_env[BRIDGE_TIMEOUT_ENV] = str(int(DEFAULT_TIMEOUT_SECONDS))
+    if tool_scope is not None:
+        from agent.transports.hermes_tools_mcp_server import TOOL_SCOPE_ENV
+
+        server_env[TOOL_SCOPE_ENV] = ",".join(sorted(tool_scope))
     if grounding_key:
         # The key the send gate's recipient grounding is filed under
         # (agent/recipient_grounding.py). The server's tool calls carry no
@@ -1150,6 +1128,7 @@ class ClaudeCodeSession:
         approval_callback: Optional[Callable[..., str]] = None,
         tool_bridge_dispatch: Optional[Callable[[str, dict], Any]] = None,
         tool_bridge_tools: Optional["tuple[str, ...] | list[str]"] = None,
+        tool_scope: Optional["frozenset[str] | set[str] | tuple[str, ...] | list[str]"] = None,
     ) -> None:
         self._config_dir = config_dir or claude_code_home()
         self._cwd = cwd or default_workspace_dir()
@@ -1176,7 +1155,10 @@ class ClaudeCodeSession:
         self._disallowed_tools: list[str] = list(disallowed)
         self._system_prompt = system_prompt or ""
         self._system_prompt_path: Optional[str] = None
-        self._expose_hermes_tools = expose_hermes_tools
+        # A request's narrowed tools (X-Hermes-Enabled-Toolsets), fixed at spawn; None = not
+        # narrowed. Empty = no tools: no hermes-tools server and no built-ins (native_tool_flags).
+        self._tool_scope = frozenset(tool_scope) if tool_scope is not None else None
+        self._expose_hermes_tools = expose_hermes_tools and self._tool_scope != frozenset()
         self._mcp_config_path = mcp_config_path
         #: Hermes's own MCP config, kept in memory: put back into the file before every spawn, and
         #: what the fix-signing key's taker must match (``mcp_server_spec``).
@@ -1269,6 +1251,10 @@ class ClaudeCodeSession:
     @property
     def config_dir(self) -> str:
         return self._config_dir
+
+    @property
+    def tool_scope(self) -> Optional[frozenset[str]]:
+        return self._tool_scope
 
     @property
     def cwd(self) -> str:
@@ -1392,17 +1378,8 @@ class ClaudeCodeSession:
             cmd += ["--session-id", self._requested_session_id]
         if self._model:
             cmd += ["--model", self._model]
-        if self._disallowed_tools:
-            # The tool-authority boundary (#98533): native OS-level tools are
-            # denied in EVERY mode, including bypassPermissions, unless the
-            # operator set claude_code.native_tools. ``--tools`` restricts the
-            # built-in set to the inert allowlist (anything the CLI adds in a
-            # future release is excluded by construction); the deny list is
-            # belt-and-braces. Deny rules win over allow rules and over the
-            # permission mode inside the CLI.
-            cmd += ["--tools", ",".join(_INERT_NATIVE_TOOLS)]
-            cmd += ["--disallowedTools", ",".join(dict.fromkeys(self._disallowed_tools))]
-        allowed = [t for t in self._allowed_tools if t not in self._disallowed_tools]
+        flags, allowed = native_tool_flags(self._tool_scope, self._allowed_tools, self._disallowed_tools)
+        cmd += flags
         if self._expose_hermes_tools and self._mcp_config_path:
             cmd += ["--mcp-config", self._mcp_config_path]
             # Pre-approve the Hermes tools: they are gated by Hermes' own
@@ -1446,6 +1423,7 @@ class ClaudeCodeSession:
                 bridge_token=bridge.token if bridge else None,
                 bridge_tools=bridge.allowed_tools if bridge else None,
                 grounding_key=self._grounding_key,
+                tool_scope=self._tool_scope,
             )
             self._owns_mcp_config = True
             self._mcp_payload = _LAST_MCP_PAYLOAD

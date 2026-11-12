@@ -367,6 +367,45 @@ class TestToolAuthority:
         finally:
             session.close()
 
+    def test_a_no_tools_scope_spawns_with_no_tools_of_any_kind(self, fake_claude):
+        """X-Hermes-Enabled-Toolsets: none. Measured: the title namer, given
+        "Ask Claude, ChatGPT and Gemini", called ask_delegate and web_search
+        for real through hermes-tools. An empty scope starts no hermes-tools
+        server and no built-ins, even with native_tools on."""
+        for native in (False, True):
+            session = _session(fake_claude, security_mode="auto", native_tools=native,
+                               expose_hermes_tools=True, tool_scope=())
+            try:
+                session.ensure_started()
+                _, record = fake_claude
+                argv = json.loads(record.read_text())["argv"]
+                assert argv[argv.index("--tools") + 1] == ""
+                assert "--mcp-config" not in argv
+                assert "--allowedTools" not in argv
+                assert {"Bash", "WebSearch", "WebFetch"} <= set(_argv_tools(argv, "--disallowedTools"))
+                assert session._mcp_config_path is None and session._tool_bridge is None
+            finally:
+                session.close()
+
+    def test_a_narrowed_scope_reaches_the_mcp_server_and_keeps_the_boundary(self, fake_claude):
+        """A narrowed (non-empty) scope is written into the mcp-config for the
+        server to honour, and native OS tools stay off even with native_tools."""
+        from agent.transports.hermes_tools_mcp_server import TOOL_SCOPE_ENV
+
+        session = _session(fake_claude, security_mode="auto", native_tools=True,
+                           expose_hermes_tools=True, tool_scope=("web_search", "memory"))
+        try:
+            session.ensure_started()
+            _, record = fake_claude
+            argv = json.loads(record.read_text())["argv"]
+            env = json.loads(Path(session._mcp_config_path).read_text())["mcpServers"]["hermes-tools"]["env"]
+            assert env[TOOL_SCOPE_ENV] == "memory,web_search"
+            assert set(_argv_tools(argv, "--tools")) == {"TodoWrite", "ToolSearch"}
+            assert "Bash" in _argv_tools(argv, "--disallowedTools")
+            assert "Bash" not in _argv_tools(argv, "--allowedTools")
+        finally:
+            session.close()
+
     def test_hermes_terminal_permission_prompt_shows_the_command(self):
         seen = {}
 

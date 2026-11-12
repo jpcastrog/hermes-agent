@@ -1406,3 +1406,82 @@ class TestBackgroundHelperPreamble:
 
         monkeypatch.setattr(recall, "turn_preamble", boom)
         assert rt._with_helper_preamble(_agent("helpers-6"), "hello", fresh=True) == "hello"
+
+
+class TestARequestsToolScope:
+    """X-Hermes-Enabled-Toolsets on the claude_code runtime.
+
+    api_server marks a narrowed agent with ``_hermes_restricted_toolsets``.
+    Parapeto's side sessions (title namer, dictation polisher, meeting scans)
+    send ``none``; on a Claude plan the title namer still called ask_delegate
+    and web_search through hermes-tools, which popped send cards nobody asked
+    for. The child must be spawned with exactly the agent's narrowed tools,
+    and a warm child must never cross between scopes.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tools_on(self, monkeypatch):
+        cfg = rt._claude_code_config()
+        monkeypatch.setattr(
+            rt, "_claude_code_config",
+            lambda: {**cfg, "expose_hermes_tools": True, "prewarm": False},
+        )
+
+    def _agent(self, sid, tools, *, restricted):
+        agent = _agent(sid)
+        agent.valid_tool_names = set(tools)
+        agent._invoke_tool = lambda *a, **k: "ran"
+        if restricted is not None:
+            agent._hermes_restricted_toolsets = tuple(restricted)
+        return agent
+
+    def test_a_no_tools_request_gets_a_child_with_no_tools(self):
+        agent = self._agent("side", (), restricted=())
+        _turn(agent)
+        session = agent._claude_code_session
+        argv = session._build_command(resume=False)
+        assert argv[argv.index("--tools") + 1] == ""
+        assert "--mcp-config" not in argv
+        assert session._mcp_config_path is None and session._tool_bridge is None
+
+    def test_a_narrowed_request_hands_its_names_to_the_mcp_server(self):
+        from agent.transports.hermes_tools_mcp_server import TOOL_SCOPE_ENV
+
+        agent = self._agent("learn", ("memory",), restricted=("memory",))
+        _turn(agent)
+        session = agent._claude_code_session
+        env = json.loads(
+            Path(session._mcp_config_path).read_text()
+        )["mcpServers"]["hermes-tools"]["env"]
+        assert env[TOOL_SCOPE_ENV] == "memory"
+        assert session._tool_bridge.allowed_tools == ("memory",)
+
+    def test_a_warm_child_never_crosses_between_scopes(self):
+        """Same Hermes session, three requests: full, none, full. Each scope
+        change gets its own child; the header-less ones look as they always
+        did (hermes-tools, no scope written)."""
+        from agent.transports.hermes_tools_mcp_server import TOOL_SCOPE_ENV
+
+        full = self._agent("conv", ("terminal",), restricted=None)
+        _turn(full)
+        first = full._claude_code_session
+        env = json.loads(Path(first._mcp_config_path).read_text())["mcpServers"]["hermes-tools"]["env"]
+        assert TOOL_SCOPE_ENV not in env
+
+        bare = self._agent("conv", (), restricted=())
+        _turn(bare)
+        second = bare._claude_code_session
+        assert second is not first and second.pid != first.pid
+        assert second.tool_scope == frozenset()
+        assert "--mcp-config" not in second._build_command(resume=False)
+
+        full_again = self._agent("conv", ("terminal",), restricted=None)
+        _turn(full_again)
+        third = full_again._claude_code_session
+        assert third is not second and third.tool_scope is None
+        assert "--mcp-config" in third._build_command(resume=False)
+
+    def test_a_spare_is_keyed_by_scope(self):
+        full = self._agent("a", ("terminal",), restricted=None)
+        bare = self._agent("b", ("terminal",), restricted=())
+        assert rt._spare_key(full) != rt._spare_key(bare)

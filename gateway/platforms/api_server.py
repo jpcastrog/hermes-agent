@@ -2579,16 +2579,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
         if restrict_toolsets is not None:
-            # Narrow-only, applied to the ALREADY-RESOLVED set. Re-running
-            # _get_platform_tools with a rewritten platform_toolsets would re-add
-            # every enabled MCP server (vercel/pulse/supabase/cloudflare) and the
-            # default-on plugin toolsets (connectors/moe_profile) — all
-            # action/exfil-capable — defeating the point. Filtering the resolved
-            # set instead strips those too. A client can only shrink to a subset,
-            # never widen; an empty or unknown request fails CLOSED (no tools),
-            # never open. So the learn seam's memory-write turn holds untrusted
-            # connector-derived data with NO send/exfil tool — the "lethal
-            # trifecta" is actually broken, not just the shell/browser part.
+            # Narrow-only, applied to the ALREADY-RESOLVED set. Re-running _get_platform_tools
+            # with a rewritten platform_toolsets would re-add every enabled MCP server
+            # (vercel/pulse/supabase/cloudflare) and the default-on plugin toolsets
+            # (connectors/moe_profile) — all action/exfil-capable. Filtering the resolved set
+            # strips those too. A client can only shrink to a subset; an empty or unknown
+            # request fails CLOSED (no tools). So the learn seam's memory-write turn holds
+            # connector-derived data with NO send/exfil tool: the "lethal trifecta" is broken.
             _req = {t.strip() for t in restrict_toolsets if t.strip()}
             enabled_toolsets = sorted(t for t in enabled_toolsets if t in _req)
 
@@ -2630,6 +2627,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        if restrict_toolsets is not None:  # claude_code hands this to its hermes-tools MCP server
+            agent._hermes_restricted_toolsets = tuple(enabled_toolsets)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

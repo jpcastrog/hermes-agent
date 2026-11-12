@@ -104,6 +104,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.claude_code_tool_scope import hermes_tool_scope, rebuild_if_out_of_scope, scope_signature
+
 logger = logging.getLogger(__name__)
 
 
@@ -608,6 +610,7 @@ def _spare_signature(agent) -> tuple:
         bool(cfg.get("expose_hermes_tools", True)),
         os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
         tuple(bridged_tools_for(agent)),
+        scope_signature(agent),  # a no-tools child never serves a full request, or the reverse
     )
 
 
@@ -1635,6 +1638,7 @@ def _build_session(agent, *, session_key: Optional[str] = _UNSET):
         on_event=make_claude_code_event_bridge(agent),
         tool_bridge_dispatch=make_tool_bridge_dispatch(agent),
         tool_bridge_tools=bridged_tools_for(agent),
+        tool_scope=hermes_tool_scope(agent),
     )
 
 
@@ -1720,6 +1724,8 @@ def _run_claude_code_turn_body(
             "error": str(exc),
         }
     session = entry.session
+    if not created and rebuild_if_out_of_scope(agent, entry, registry_key):
+        session, created = entry.session, True
     # The registry hands the same process to every AIAgent instance of a
     # session; point its UI/approval hooks at THIS instance for the turn and
     # expose it for interrupt()/close() forwarding.

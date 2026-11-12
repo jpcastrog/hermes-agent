@@ -227,6 +227,13 @@ CLAUDE_CODE_OS_TOOLS: tuple[str, ...] = (
 )
 PROFILE_ENV = "HERMES_MCP_TOOL_PROFILE"
 SCRUB_ENV = "HERMES_MCP_SCRUB_ENV"
+#: Comma-separated tool names this child may see and run, when the request
+#: that built it narrowed its toolsets (``X-Hermes-Enabled-Toolsets``). Unset
+#: means no narrowing: everything :func:`tools_to_offer` allows, as before.
+#: Set but empty means nothing at all. The runtime does not start this server
+#: for an empty scope; the empty case is honoured here anyway, so a stray
+#: config cannot turn "no tools" into "every tool".
+TOOL_SCOPE_ENV = "HERMES_MCP_TOOL_SCOPE"
 CLAUDE_CODE_PROFILE = "claude-code"
 
 
@@ -369,6 +376,35 @@ def tools_to_offer(
             continue
         offered.append(n)
     return tuple(offered)
+
+
+def tool_scope_from_env(env: Optional[dict] = None) -> Optional[frozenset[str]]:
+    """The narrowed tool names from ``$HERMES_MCP_TOOL_SCOPE``, or ``None``
+    when the variable is absent (no narrowing). Present and empty is the
+    empty set: fail closed, never open."""
+    source = os.environ if env is None else env
+    if TOOL_SCOPE_ENV not in source:
+        return None
+    raw = source.get(TOOL_SCOPE_ENV) or ""
+    return frozenset(n.strip() for n in raw.split(",") if n.strip())
+
+
+def scope_refusal(tool_name: str, args: Optional[dict], scope: Optional[frozenset]) -> Optional[str]:
+    """Why ``tool_name`` must not run under ``scope``, or ``None`` to run it.
+
+    Defence in depth behind the narrowed listing: a call for a name that was
+    never listed is refused, and so is a ``tool_call`` whose target is outside
+    the scope (``tool_call`` would otherwise reach any deferred tool in this
+    process's whole registry)."""
+    if scope is None:
+        return None
+    if tool_name not in scope:
+        return f"{tool_name} is not available in this session"
+    if tool_name == "tool_call":
+        target = str((args or {}).get("name") or "").strip()
+        if target not in scope:
+            return f"{target or 'that tool'} is not available in this session"
+    return None
 
 
 def exposed_tools_for_profile(profile: Optional[str]) -> tuple[str, ...]:
@@ -664,6 +700,11 @@ def _build_server(profile: Optional[str] = None) -> Any:
     # connectors live here), and every external MCP server's tools — plus the
     # four agent-loop tools when there is a bridge to run them on.
     tools_to_expose = tools_to_offer(profile, set(all_defs), bridge=bridged_names)
+    # The request that built this child narrowed its toolsets: list only those.
+    scope = tool_scope_from_env()
+    if scope is not None:
+        tools_to_expose = tuple(n for n in tools_to_expose if n in scope)
+        logger.info("tool scope narrowed by the request: %d tool(s) offered", len(tools_to_expose))
     if has_bridge:
         logger.info(
             "tool bridge configured — %s dispatch on the parent agent",
@@ -708,6 +749,10 @@ def _build_server(profile: Optional[str] = None) -> Any:
                     # Filter out None values before dispatch so unset optionals
                     # aren't forwarded to the handler.
                     args = {k: v for k, v in kwargs.items() if v is not None}
+                    refusal = scope_refusal(tool_name, args, scope)
+                    if refusal is not None:
+                        logger.warning("refused %s outside the request's tool scope", tool_name)
+                        return json.dumps({"error": refusal, "tool": tool_name})
                     if bridged:
                         # Home to the process that owns the agent — and the
                         # credential a subagent has to be built with.
