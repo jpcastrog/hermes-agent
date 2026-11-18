@@ -15,6 +15,7 @@ import os
 import queue
 import sys
 import threading
+from contextvars import ContextVar
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
 from time import monotonic as _monotonic
@@ -236,6 +237,41 @@ def clear_session_context() -> None:
     _session_context.session_id = None
 
 
+# A private (ephemeral) chat turn leaves no text in any log (X-Hermes-Ephemeral on
+# /v1/chat/completions). The flag is a ContextVar so it follows the turn into the worker
+# thread and the tool threads that copy its context, and never touches a concurrent
+# ordinary turn. ``EPHEMERAL_TURN_ENV`` marks a whole process as private: the hermes-tools
+# MCP server a private claude_code turn spawns is dedicated to that turn.
+EPHEMERAL_TURN_ENV = "HERMES_EPHEMERAL_TURN"
+EPHEMERAL_LOG_TEXT = "[private chat] log text withheld"
+_EPHEMERAL_TURN: ContextVar[bool] = ContextVar("hermes_ephemeral_turn", default=False)
+
+
+def set_ephemeral_turn(value: bool = True):
+    """Mark the current context as a private turn; returns the token for ``reset_ephemeral_turn``."""
+    return _EPHEMERAL_TURN.set(bool(value))
+
+
+def reset_ephemeral_turn(token) -> None:
+    _EPHEMERAL_TURN.reset(token)
+
+
+def is_ephemeral_turn() -> bool:
+    """True inside a private turn, or in a process started for one."""
+    if _EPHEMERAL_TURN.get():
+        return True
+    return str(os.environ.get(EPHEMERAL_TURN_ENV, "")).strip() == "1"
+
+
+def _withhold_ephemeral_text(record: logging.LogRecord) -> None:
+    """Keep the record (logger, level, time) but drop every word of its text."""
+    record.msg = EPHEMERAL_LOG_TEXT
+    record.args = ()
+    record.exc_info = None
+    record.exc_text = None
+    record.stack_info = None
+
+
 def _install_session_record_factory() -> None:
     """Replace the global LogRecord factory with one that adds ``session_tag``.
 
@@ -249,6 +285,8 @@ def _install_session_record_factory() -> None:
 
     def _session_record_factory(*args, **kwargs):
         record = current_factory(*args, **kwargs)
+        if is_ephemeral_turn():
+            _withhold_ephemeral_text(record)
         sid = getattr(_session_context, "session_id", None)
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
         # QueueListener formats on its own thread, after the profile-scoped

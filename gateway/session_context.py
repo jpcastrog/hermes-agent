@@ -92,6 +92,20 @@ def get_turn_person_words():
     return None if value is _UNSET else str(value)
 
 
+def turn_is_ephemeral() -> bool:
+    """True while a private (ephemeral) chat turn runs: X-Hermes-Ephemeral on
+    /v1/chat/completions. Such a turn stores nothing about the conversation, so a plugin
+    hook that would keep, learn from or log the turn's words checks this and does nothing.
+    (The memory provider, background review, ``pre_llm_call``, ``post_llm_call`` and
+    ``on_session_end`` hooks do not run for it at all.) The flag itself lives in
+    ``hermes_logging`` so the log record factory can read it without importing the gateway."""
+    try:
+        from hermes_logging import is_ephemeral_turn
+        return is_ephemeral_turn()
+    except Exception:
+        return False
+
+
 _TURN_STARTED_AT = ContextVar("HERMES_TURN_STARTED_AT", default=_UNSET)
 
 

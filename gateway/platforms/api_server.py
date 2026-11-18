@@ -96,7 +96,10 @@ _STATIC_FEATURE_FLAGS = {
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
-    "session_key_header": "X-Hermes-Session-Key"}
+    "session_key_header": "X-Hermes-Session-Key",
+    # POST /v1/chat/completions with this header set to "1"/"true": a private chat turn that
+    # stores nothing about the conversation; honoured turns echo X-Hermes-Ephemeral-Applied: 1.
+    "ephemeral_header": "X-Hermes-Ephemeral"}
 # /v1/capabilities "endpoints" table: name -> (method, path).
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
@@ -810,6 +813,32 @@ def _publish_turn_process_ownership(agent: Any, task_id: str) -> None:
     agent._gateway_turn_process_task_id = task_id
     agent._gateway_turn_process_baseline = process_registry.snapshot_running_ids(task_id)
     agent._gateway_turn_process_epoch = epoch
+
+
+def _discard_print(*_args: Any, **_kwargs: Any) -> None:
+    """A private turn's console output goes nowhere (see ``_create_agent``)."""
+
+
+def _forget_ephemeral_turn(agent: Any) -> None:
+    """End of a private (X-Hermes-Ephemeral) turn: remove what the send gate's recipient
+    grounding filed for it (the person's words, tool results, the reply), and shut down any
+    memory manager instead of parking it for a next turn. Never raises."""
+    try:
+        from agent.recipient_grounding import forget
+        keys: List[str] = []
+        # The turn's own agent and any helper it started (tools.delegate_tool marks them).
+        for each in [agent, *list(getattr(agent, "_ephemeral_children", None) or [])]:
+            keys.extend(getattr(each, "_grounding_turn_keys", None) or [])
+            session = getattr(each, "_claude_code_session", None)
+            keys.append(str(getattr(session, "grounding_key", "") or ""))
+            keys.append(str(getattr(each, "session_id", "") or ""))
+        forget(keys)
+    except Exception:
+        logger.debug("private chat: grounding cleanup failed", exc_info=True)
+    manager = getattr(agent, "_memory_manager", None)
+    if manager is not None:
+        with suppress(Exception):
+            manager.shutdown_all()
 
 
 def _clear_turn_process_ownership(agent: Any) -> None:
@@ -2547,8 +2576,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
         room_execution_policy: Optional[Dict[str, Any]] = None,
-        restrict_toolsets: Optional[List[str]] = None) -> Any:
+        restrict_toolsets: Optional[List[str]] = None, ephemeral: bool = False) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
+        ``ephemeral`` (X-Hermes-Ephemeral) builds an agent that stores nothing about the turn: no
+        session DB, no memory (provider, MEMORY.md or the memory tool), no background review, no
+        filesystem checkpoints, no request dumps (``_ephemeral_turn``) and every persistence path
+        closed (``_persist_disabled``, the same switch the background-review fork uses).
         ``restrict_toolsets`` (X-Hermes-Enabled-Toolsets) narrows the RESOLVED toolset for this
         agent only — never widens; see the filter below.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
@@ -2588,6 +2621,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # connector-derived data with NO send/exfil tool: the "lethal trifecta" is broken.
             _req = {t.strip() for t in restrict_toolsets if t.strip()}
             enabled_toolsets = sorted(t for t in enabled_toolsets if t in _req)
+        if ephemeral:
+            # The memory tool writes MEMORY.md / USER.md: a private chat neither reads nor writes
+            # memory, like a temporary chat elsewhere.
+            enabled_toolsets = [t for t in enabled_toolsets if t != "memory"]
 
         # Same gate the messaging gateway and TUI apply: ``display.interim_assistant_messages``
         # off means no callback is installed, so mid-turn commentary never leaves the agent.
@@ -2616,17 +2653,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "interim_assistant_callback": interim_assistant_callback,
             "reasoning_callback": reasoning_callback,
             "status_callback": status_callback,
-            "session_db": self._ensure_session_db(),
+            "session_db": None if ephemeral else self._ensure_session_db(),
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key,
             # The session's provider from the previous request, so its queued recall reaches this turn
             # (#120116); checked back in by the turn's finally.
-            "memory_manager": self._memory_sessions.checkout(session_id)}
+            "memory_manager": None if ephemeral else self._memory_sessions.checkout(session_id)}
+        if ephemeral:
+            agent_kwargs.update({
+                "skip_memory": True,
+                "skip_background_review": True, "checkpoints_enabled": False,
+                "save_trajectories": False})
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        if ephemeral:
+            agent._persist_disabled = True
+            agent._ephemeral_turn = True
+            # The gateway's stdout and stderr are kept in a log file by the app that runs it;
+            # the agent's console lines (retry traces quoting a provider's error text) stay off it.
+            agent.suppress_status_output = True
+            agent._print_fn = _discard_print
         if restrict_toolsets is not None:  # claude_code hands this to its hermes-tools MCP server
             agent._hermes_restricted_toolsets = tuple(enabled_toolsets)
         route_source = (
@@ -4417,8 +4466,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         restrict_toolsets: Optional[List[str]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
         resume_unanswered_turn: bool = False, approval_notify_callback=None,
-        approval_session_key: Optional[str] = None) -> tuple:
+        approval_session_key: Optional[str] = None, ephemeral: bool = False) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
+        ``ephemeral`` (X-Hermes-Ephemeral) runs a private turn that stores nothing about the
+        conversation: see ``_create_agent``; its log records carry no text
+        (``hermes_logging.set_ephemeral_turn``), its memory manager is never checked in, and the
+        send gate's grounding files it wrote for the turn are removed when it ends.
         ``restrict_toolsets`` narrows this turn's toolset (narrow-only, fail-closed).
         ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
         approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
@@ -4451,9 +4504,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             origin_token = set_turn_origin(request_turn_origin)
             # …and of what the person said (X-Hermes-Person-Words), for recipient grounding.
             words_token = set_turn_person_words(request_person_words)
+            ephemeral_token = None
+            if ephemeral:
+                from hermes_logging import set_ephemeral_turn
+                ephemeral_token = set_ephemeral_turn(True)
             try:
                 return _run_bound()
             finally:
+                if ephemeral_token is not None:
+                    from hermes_logging import reset_ephemeral_turn
+                    reset_ephemeral_turn(ephemeral_token)
                 reset_turn_person_words(words_token)
                 reset_turn_origin(origin_token)
 
@@ -4480,7 +4540,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
-                        restrict_toolsets=restrict_toolsets)
+                        restrict_toolsets=restrict_toolsets, ephemeral=ephemeral)
                     # Lifecycle status (rate-limit warnings, compaction notices) has no home on
                     # this platform otherwise: the status adapter's send() is a stub here, so
                     # run_agent._emit_status fires into nothing. Set before agent_ref so a status
@@ -4572,7 +4632,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     if agent is not None:
                         _clear_turn_process_ownership(agent)
                         self._shutdown_interruptible_agents.pop(id(agent), None)
-                        self._memory_sessions.checkin(agent)
+                        if ephemeral:
+                            _forget_ephemeral_turn(agent)
+                        else:
+                            self._memory_sessions.checkin(agent)
                         # Bind the declared key to the row the turn actually ended on
                         # (agent.session_id carries a mid-turn rotation). Opt-in per route.
                         # Record the declared conversation on the row the turn actually ended on —

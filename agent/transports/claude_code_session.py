@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import functools
 import getpass
 import json
 import logging
@@ -909,6 +910,15 @@ def enforce_settings_file(path: str, deny_rules: Optional[list[str]] = None) -> 
     return path
 
 
+def _ephemeral_env_name() -> str:
+    """The variable that marks a hermes-tools server as serving one private chat turn."""
+    try:
+        from hermes_logging import EPHEMERAL_TURN_ENV
+        return EPHEMERAL_TURN_ENV
+    except Exception:  # pragma: no cover - hermes_logging always ships beside this module
+        return "HERMES_EPHEMERAL_TURN"
+
+
 def write_mcp_config(
     *,
     python_executable: Optional[str] = None,
@@ -920,6 +930,7 @@ def write_mcp_config(
     bridge_tools: Optional["tuple[str, ...] | list[str]"] = None,
     grounding_key: Optional[str] = None,
     tool_scope: Optional["frozenset[str] | set[str] | tuple[str, ...] | list[str]"] = None,
+    extra_env: Optional[dict[str, str]] = None,
 ) -> str:
     """Write the ``--mcp-config`` JSON that launches ``hermes_tools_mcp_server``.
 
@@ -1000,6 +1011,8 @@ def write_mcp_config(
         from agent.recipient_grounding import GROUNDING_KEY_ENV
 
         server_env[GROUNDING_KEY_ENV] = grounding_key
+    if extra_env:
+        server_env.update({str(k): str(v) for k, v in extra_env.items()})
     payload = {
         "mcpServers": {
             HERMES_TOOLS_MCP_SERVER_NAME: {
@@ -1125,6 +1138,7 @@ class ClaudeCodeSession:
         session_id: Optional[str] = None,
         session_key: Optional[str] = None,
         resume: bool = True,
+        persist: bool = True,
         approval_callback: Optional[Callable[..., str]] = None,
         tool_bridge_dispatch: Optional[Callable[[str, dict], Any]] = None,
         tool_bridge_tools: Optional["tuple[str, ...] | list[str]"] = None,
@@ -1176,6 +1190,13 @@ class ClaudeCodeSession:
         # uuid (the CLI refuses ``--session-id`` for an id whose transcript
         # exists: "Session ID ... is already in use"), and later resumes have
         # to find that rotated id.
+        # ``persist=False`` is a private chat (X-Hermes-Ephemeral): the CLI keeps no transcript
+        # (``--no-session-persistence``), is never resumed, maps no id, and its hermes-tools
+        # server and reader threads log no text (``hermes_logging.is_ephemeral_turn``).
+        self._persist = bool(persist)
+        if not self._persist:
+            session_key = None
+            resume = False
         self._session_key = session_key
         mapped = load_session_map(self._config_dir).get(session_key) if session_key else None
         self._requested_session_id = mapped or session_id or str(uuid.uuid4())
@@ -1316,7 +1337,7 @@ class ClaudeCodeSession:
         the id map so a later ``--resume`` of this Hermes session finds the
         transcript the spare has been writing.
         """
-        if self._session_key == session_key:
+        if self._session_key == session_key or not self._persist:
             return
         self._session_key = session_key
         try:
@@ -1372,7 +1393,10 @@ class ClaudeCodeSession:
             # path over the stream-json control channel instead of the
             # non-interactive default (silent denial).
             cmd += ["--permission-prompt-tool", "stdio"]
-        if resume:
+        if not self._persist:
+            # Nothing kept under projects/: the history arrives in the turn's own input.
+            cmd += ["--no-session-persistence"]
+        elif resume:
             cmd += ["--resume", self._requested_session_id]
         else:
             cmd += ["--session-id", self._requested_session_id]
@@ -1424,6 +1448,7 @@ class ClaudeCodeSession:
                 bridge_tools=bridge.allowed_tools if bridge else None,
                 grounding_key=self._grounding_key,
                 tool_scope=self._tool_scope,
+                extra_env=(None if self._persist else {_ephemeral_env_name(): "1"}),
             )
             self._owns_mcp_config = True
             self._mcp_payload = _LAST_MCP_PAYLOAD
@@ -1432,7 +1457,7 @@ class ClaudeCodeSession:
             rewrite_mcp_config(self._mcp_config_path, self._mcp_payload)
         self._write_system_prompt_file()
 
-        transcript_exists = resume_transcript_exists(
+        transcript_exists = self._persist and resume_transcript_exists(
             self._config_dir, self._requested_session_id
         )
         resume = self._resume and transcript_exists
@@ -1483,6 +1508,8 @@ class ClaudeCodeSession:
     def _rotate_session_id(self, reason: str) -> None:
         old_id = self._requested_session_id
         self._requested_session_id = str(uuid.uuid4())
+        if not self._persist:
+            return
         logger.warning(
             "claude-code: rotating CLI session id %s -> %s (%s)",
             old_id[:8], self._requested_session_id[:8], reason,
@@ -1540,13 +1567,21 @@ class ClaudeCodeSession:
         self._lines = queue.Queue()
         with self._stderr_lock:
             self._stderr_lines = []
+        # A private turn's reader threads carry its context, so whatever they log is withheld
+        # like the turn's own records; an ordinary session's threads start exactly as before.
+        if self._persist:
+            read_stdout, read_stderr = self._read_stdout, self._read_stderr
+        else:
+            import contextvars
+            read_stdout = functools.partial(contextvars.copy_context().run, self._read_stdout)
+            read_stderr = functools.partial(contextvars.copy_context().run, self._read_stderr)
         self._reader_thread = threading.Thread(
-            target=self._read_stdout, args=(proc,), daemon=True,
+            target=read_stdout, args=(proc,), daemon=True,
             name="claude-code-stdout",
         )
         self._reader_thread.start()
         threading.Thread(
-            target=self._read_stderr, args=(proc,), daemon=True,
+            target=read_stderr, args=(proc,), daemon=True,
             name="claude-code-stderr",
         ).start()
         logger.info(
@@ -1554,7 +1589,8 @@ class ClaudeCodeSession:
             "config_dir=%s cwd=%s %s=%s",
             proc.pid, self._model or "default", self._permission_mode,
             self._config_dir, self._cwd,
-            "resume" if resume else "session-id", self._requested_session_id[:8],
+            ("no-persistence" if not self._persist else "resume" if resume else "session-id"),
+            self._requested_session_id[:8],
         )
 
     def restart(self, *, system_prompt: Optional[str] = None) -> str:

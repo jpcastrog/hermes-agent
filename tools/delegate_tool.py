@@ -337,6 +337,16 @@ def _build_child_agent(
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    if getattr(parent_agent, "_ephemeral_turn", False) is True:
+        # A helper of a private chat (X-Hermes-Ephemeral) is private too: nothing stored, no
+        # console lines, a one-off claude_code child. The parent's turn end removes what the
+        # send gate filed for it (gateway.platforms.api_server._forget_ephemeral_turn).
+        child._persist_disabled = child._ephemeral_turn = child.suppress_status_output = True
+        child.skip_background_review = True
+        try:
+            parent_agent._ephemeral_children.append(child)
+        except AttributeError:
+            parent_agent._ephemeral_children = [child]
     # Recipient grounding: the goal is the parent MODEL's words, so it can refuse
     # a recipient but never name one; the person's words from the parent's turn
     # travel with the helper (agent/recipient_grounding.py).

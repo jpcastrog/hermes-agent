@@ -59,6 +59,12 @@ async def _iter_stream_items(stream_q, agent_task, response):
         last_activity = time.monotonic()
 
 
+def _ephemeral_requested(request: Any) -> bool:
+    """X-Hermes-Ephemeral: "1" or "true" (any case) turns a private chat on; anything else is off."""
+    value = str(request.headers.get("X-Hermes-Ephemeral", "") or "").strip().lower()
+    return value in ("1", "true")
+
+
 def _result_flags(result: Any) -> tuple:
     """``(completed, partial, failed, error)`` from an agent result dict (defaults if not a dict)."""
     if not isinstance(result, dict):
@@ -684,7 +690,20 @@ class OpenAICompatRoutesMixin:
         # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
         # requires a configured API key or any client could read history by guessing ids.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
-        if provided_session_id:
+        # X-Hermes-Ephemeral: a private chat. The whole history comes in the body and the turn
+        # stores nothing about it (no session row, memory, review, title, dump or log text).
+        ephemeral = _ephemeral_requested(request)
+        if ephemeral and provided_session_id:
+            # A stored session cannot be continued privately: fail closed, never half-private.
+            return _invalid_request(
+                "X-Hermes-Ephemeral cannot be combined with X-Hermes-Session-Id; "
+                "send the whole conversation in 'messages' instead")
+        if ephemeral:
+            # A throwaway id: nothing keyed on a session (warm processes, memory managers,
+            # grounding files) can be found again or shared with a stored conversation.
+            session_id = f"ephemeral-{uuid.uuid4().hex}"
+            logger.info("[api_server] private chat turn (X-Hermes-Ephemeral): nothing about it is stored")
+        elif provided_session_id:
             if not self._api_key:
                 logger.warning(
                     "Session continuation via X-Hermes-Session-Id rejected: "
@@ -746,6 +765,10 @@ class OpenAICompatRoutesMixin:
         _applied_headers = (
             {"X-Hermes-Applied-Toolsets": ",".join(_applied_toolsets)}
             if _applied_toolsets is not None else {})
+        if ephemeral:
+            # Echoed so a client can refuse to show a turn as private when a gateway that predates
+            # this header silently stored it.
+            _applied_headers["X-Hermes-Ephemeral-Applied"] = "1"
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
@@ -757,6 +780,8 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
+        if ephemeral:
+            run_kwargs["ephemeral"] = True
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
@@ -812,7 +837,9 @@ class OpenAICompatRoutesMixin:
             # finds whatever session is live by then.
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
-                agent_task, agent_ref, session_id=(provided_session_id or session_id),
+                agent_task, agent_ref,
+                # A private turn's throwaway id is not echoed: there is nothing to continue.
+                session_id=(None if ephemeral else (provided_session_id or session_id)),
                 gateway_session_key=gateway_session_key, extra_headers=_applied_headers)
 
         async def _compute_completion():
@@ -835,7 +862,9 @@ class OpenAICompatRoutesMixin:
         # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
         # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
         # id the agent actually resolved, so headerless clients still learn where the turn went.
-        response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
+        response_headers = (
+            {} if ephemeral
+            else {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))})
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         # Echo the actually-applied toolset so a restriction-aware client can confirm the turn

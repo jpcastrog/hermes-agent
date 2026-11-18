@@ -309,6 +309,21 @@ def _update(key: str, mutate) -> None:
         os.close(fd)
 
 
+def forget(keys: Iterable[str]) -> None:
+    """Remove the ledgers filed under ``keys`` (a private chat turn keeps nothing once it
+    ends). Never raises."""
+    for key in dict.fromkeys(k for k in (keys or ()) if k):
+        try:
+            path = ledger_path(key)
+        except Exception:
+            continue
+        for victim in (path, Path(str(path) + ".lock")):
+            try:
+                victim.unlink()
+            except OSError:
+                pass
+
+
 def _same(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
     return a.get("text") == b.get("text") and a.get("origin") == b.get("origin")
 

@@ -884,6 +884,14 @@ def _acquire_entry(agent) -> tuple[_RegistryEntry, bool]:
     the registry lock (a placeholder entry + ``ready`` event serialises only
     the readers of THAT key)."""
     key = _registry_key(agent)
+    if _is_ephemeral(agent):
+        # A private chat (X-Hermes-Ephemeral): a one-off child that keeps no transcript, is
+        # never registered, never taken from or returned to the spare pool, and is closed when
+        # the turn ends (``_run_claude_code_turn_body``).
+        entry = _RegistryEntry(session=_build_session(agent, ephemeral=True))
+        entry.ready.set()
+        entry.turn_lock.acquire()
+        return entry, True
     if key is None:
         entry = _RegistryEntry(session=_build_session(agent))
         entry.ready.set()
@@ -1571,7 +1579,46 @@ def _answer_approval_query(agent, args: dict) -> str:
                         "outcome": result.get("outcome")}, default=str)
 
 
-def _build_session(agent, *, session_key: Optional[str] = _UNSET):
+def _is_ephemeral(agent) -> bool:
+    """A private chat turn (api_server ``X-Hermes-Ephemeral``): nothing about it is kept."""
+    return getattr(agent, "_ephemeral_turn", False) is True
+
+
+def _ephemeral_input(messages: List[Dict[str, Any]], user_message: Any) -> Any:
+    """``user_message`` with the conversation so far in front of it.
+
+    A private chat's child keeps no transcript and is never resumed, so the earlier turns
+    (which the client sent in the request body and which reach the agent as
+    ``conversation_history``) are given to it in the turn itself. ``messages`` ends with this
+    turn's user message (run_conversation appended it); every user/assistant text before it
+    is the history."""
+    from agent.transports.claude_code_session import _coerce_input_text
+
+    prior = list(messages or [])
+    if prior and isinstance(prior[-1], dict) and prior[-1].get("role") == "user":
+        prior = prior[:-1]
+    lines: List[str] = []
+    for m in prior:
+        if not isinstance(m, dict) or m.get("role") not in ("user", "assistant"):
+            continue
+        text = _coerce_input_text(m.get("content")).strip()
+        if text:
+            who = "The person" if m["role"] == "user" else "You"
+            lines.append(f"{who}: {text}")
+    if not lines:
+        return user_message
+    preamble = (
+        "This is a private chat: nothing is saved. The conversation so far:\n\n"
+        + "\n\n".join(lines)
+        + "\n\nThe person's new message follows."
+    )
+    if isinstance(user_message, list):
+        return [{"type": "text", "text": preamble}, *user_message]
+    text = user_message if isinstance(user_message, str) else str(user_message or "")
+    return f"{preamble}\n\n{text}"
+
+
+def _build_session(agent, *, session_key: Optional[str] = _UNSET, ephemeral: bool = False):
     from agent.transports.claude_code_session import ClaudeCodeSession
 
     _prune_stale_temp_files_once()
@@ -1603,7 +1650,10 @@ def _build_session(agent, *, session_key: Optional[str] = _UNSET):
     # installed one (same source the codex runtime uses). Gateway / cron
     # contexts have none -> gated tools are denied with a message.
     approval_callback = _approval_callback()
-    if session_key is _UNSET:
+    if ephemeral:
+        hermes_sid = None
+        cli_session_id = str(uuid.uuid4())
+    elif session_key is _UNSET:
         hermes_sid = _registry_key(agent)
         cli_session_id = _claude_session_id_for(agent)
     else:
@@ -1624,7 +1674,8 @@ def _build_session(agent, *, session_key: Optional[str] = _UNSET):
         deny_rules=[str(r) for r in deny] if isinstance(deny, list) and deny else None,
         session_id=cli_session_id,
         session_key=hermes_sid,
-        resume=bool(cfg.get("resume", True)),
+        resume=False if ephemeral else bool(cfg.get("resume", True)),
+        persist=not ephemeral,
         approval_callback=approval_callback,
         claude_bin=str(cfg.get("binary") or "claude"),
         model=getattr(agent, "model", None),
@@ -1699,6 +1750,7 @@ def _run_claude_code_turn_body(
 
     cfg = _claude_code_config()
     registry_key = _registry_key(agent)
+    ephemeral = _is_ephemeral(agent)
     # The id a bridged tool call is accounted under: hooks, middleware and
     # post_tool_call all take one, and a call arriving from the child belongs
     # to the turn that is waiting on it.
@@ -1784,8 +1836,11 @@ def _run_claude_code_turn_body(
             # A turn's first words never carry the break a previous turn
             # may have left armed (a turn that ended on a tool call).
             agent._stream_needs_break = False
+            turn_input = _with_helper_preamble(agent, user_message, fresh=fresh_child)
+            if ephemeral:
+                turn_input = _ephemeral_input(messages, turn_input)
             turn = session.run_turn(
-                user_input=_with_helper_preamble(agent, user_message, fresh=fresh_child),
+                user_input=turn_input,
                 turn_timeout=float(cfg.get("turn_timeout") or 600.0),
                 idle_timeout=float(cfg.get("silence_timeout") or 300.0),
             )
@@ -1827,12 +1882,19 @@ def _run_claude_code_turn_body(
             agent._claude_code_session = None
     finally:
         entry.turn_lock.release()
-        # Boot the process the NEXT conversation will run in, now, while
-        # nobody is waiting for it. No-ops when one is already warm.
-        try:
-            refill_spare(agent)
-        except Exception:
-            logger.debug("claude-code: spare refill failed", exc_info=True)
+        if ephemeral:
+            # A private chat's child serves this one turn and is never reused.
+            try:
+                session.close()
+            except Exception:
+                logger.debug("claude-code: closing a private chat's child failed", exc_info=True)
+        else:
+            # Boot the process the NEXT conversation will run in, now, while
+            # nobody is waiting for it. No-ops when one is already warm.
+            try:
+                refill_spare(agent)
+            except Exception:
+                logger.debug("claude-code: spare refill failed", exc_info=True)
     return _finish_turn(
         agent, turn, cfg,
         registry_key=registry_key, session=session,
