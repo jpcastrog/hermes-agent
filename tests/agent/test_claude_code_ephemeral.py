@@ -83,3 +83,45 @@ def test_history_goes_in_front_of_the_new_message():
     text = rt._ephemeral_input(_messages(), NOW)
     assert text.index(EARLIER) < text.index("Noted.") < text.rindex(NOW)
     assert rt._ephemeral_input([{"role": "user", "content": NOW}], NOW) == NOW
+
+
+def test_private_child_runs_in_a_throwaway_config_dir(_env, tmp_path, monkeypatch):
+    from agent.transports.claude_code_session import claude_code_home
+    shared = Path(claude_code_home())
+    shared.mkdir(parents=True, exist_ok=True)
+    (shared / "settings.json").write_text('{"model": "operator-choice"}')
+    agent = _agent("ephemeral-cfg")
+    agent._ephemeral_turn = True
+    record = tmp_path / "record.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    rt.run_claude_code_turn(agent, user_message=NOW, original_user_message=NOW,
+                            messages=_messages(), effective_task_id="t")
+    child_dir = Path(json.loads(record.read_text())["env"]["CLAUDE_CONFIG_DIR"])
+    assert child_dir.parent == shared and child_dir.name.startswith("private-")
+    assert not child_dir.exists()  # deleted when the turn ended
+    assert [p.name for p in shared.iterdir() if p.name.startswith("private-")] == []
+
+
+def test_control_ordinary_child_uses_the_shared_config_dir(_env, tmp_path, monkeypatch):
+    from agent.transports.claude_code_session import claude_code_home
+    agent = _agent("ordinary-cfg")
+    record = tmp_path / "record.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    rt.run_claude_code_turn(agent, user_message=NOW, original_user_message=NOW,
+                            messages=_messages(), effective_task_id="t")
+    assert json.loads(record.read_text())["env"]["CLAUDE_CONFIG_DIR"] == claude_code_home()
+
+
+def test_private_child_copies_operator_settings_and_points_tools_at_scratch(tmp_path):
+    (tmp_path / "settings.json").write_text('{"model": "operator-choice"}')
+    session = ClaudeCodeSession(config_dir=str(tmp_path), persist=False, warmup=False)
+    try:
+        private = Path(session.config_dir)
+        assert private.parent == tmp_path
+        assert json.loads((private / "settings.json").read_text())["model"] == "operator-choice"
+        env = session._private_server_env()
+        assert env["HERMES_EPHEMERAL_TURN"] == "1"
+        assert env["HERMES_EPHEMERAL_SCRATCH"].startswith(str(private))
+    finally:
+        session.close()
+    assert not private.exists()

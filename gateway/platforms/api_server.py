@@ -97,9 +97,10 @@ _STATIC_FEATURE_FLAGS = {
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key",
-    # POST /v1/chat/completions with this header set to "1"/"true": a private chat turn that
-    # stores nothing about the conversation; honoured turns echo X-Hermes-Ephemeral-Applied: 1.
-    "ephemeral_header": "X-Hermes-Ephemeral"}
+    # True: POST /v1/chat/completions honours X-Hermes-Ephemeral: 1 ("1"/"true"), a private chat
+    # turn that stores nothing about the conversation, and echoes X-Hermes-Ephemeral-Applied: 1.
+    # A client fails closed when this key is missing or not true.
+    "ephemeral_header": True}
 # /v1/capabilities "endpoints" table: name -> (method, path).
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),

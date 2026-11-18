@@ -32,6 +32,10 @@ def _traces_enabled_and_dir() -> Optional[Path]:
         return None
     if not moa_cfg.get("save_traces"):
         return None
+    from hermes_logging import ephemeral_scratch_dir
+    private = ephemeral_scratch_dir("moa-traces")  # a private chat's traces: deleted at turn end
+    if private is not None:
+        return private
     override = moa_cfg.get("trace_dir")
     if override:
         return Path(os.path.expandvars(os.path.expanduser(str(override))))

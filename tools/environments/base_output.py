@@ -181,7 +181,9 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
         capture_limit = 50_000
     spill_path = None
     try:
-        spill_dir = get_hermes_home() / "cache" / "terminal-output"
+        from hermes_logging import ephemeral_scratch_dir
+        # A private chat's overflow goes to its scratch folder, deleted when the turn ends.
+        spill_dir = ephemeral_scratch_dir("terminal-output") or get_hermes_home() / "cache" / "terminal-output"
         spill_path = spill_dir / f"out-{int(time.time())}-{os.getpid()}-{id(proc) & 0xffff:x}.log"
         if spill_dir.is_dir():
             cutoff = time.time() - _SPILL_MAX_AGE_S

@@ -172,7 +172,9 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
     try:
         from hermes_constants import get_hermes_dir
         import datetime as _dt
-        cache_dir = get_hermes_dir("cache/delegation", "delegation_cache")
+        from hermes_logging import ephemeral_scratch_dir
+        # A private chat's helper summary goes to its scratch folder, deleted at turn end.
+        cache_dir = ephemeral_scratch_dir("delegation") or get_hermes_dir("cache/delegation", "delegation_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / f"subagent-summary-{task_index}-{_dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
         from tools.spill_safety import write_text_exclusive

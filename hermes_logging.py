@@ -243,24 +243,84 @@ def clear_session_context() -> None:
 # ordinary turn. ``EPHEMERAL_TURN_ENV`` marks a whole process as private: the hermes-tools
 # MCP server a private claude_code turn spawns is dedicated to that turn.
 EPHEMERAL_TURN_ENV = "HERMES_EPHEMERAL_TURN"
+# Where a process started for a private turn puts the files a tool must write (spillover,
+# helper logs): a folder its parent deletes when the turn ends.
+EPHEMERAL_SCRATCH_ENV = "HERMES_EPHEMERAL_SCRATCH"
 EPHEMERAL_LOG_TEXT = "[private chat] log text withheld"
-_EPHEMERAL_TURN: ContextVar[bool] = ContextVar("hermes_ephemeral_turn", default=False)
+# A private scratch folder left by a crashed turn is removed after this long.
+_STALE_SCRATCH_SECONDS = 6 * 3600
+
+
+class _PrivateTurn:
+    """One private turn: its scratch folder, made on first use and deleted when it ends."""
+
+    __slots__ = ("scratch", "lock")
+
+    def __init__(self) -> None:
+        self.scratch: Optional[str] = None
+        self.lock = threading.Lock()
+
+
+_EPHEMERAL_TURN: ContextVar[Optional[_PrivateTurn]] = ContextVar("hermes_ephemeral_turn", default=None)
 
 
 def set_ephemeral_turn(value: bool = True):
     """Mark the current context as a private turn; returns the token for ``reset_ephemeral_turn``."""
-    return _EPHEMERAL_TURN.set(bool(value))
+    return _EPHEMERAL_TURN.set(_PrivateTurn() if value else None)
 
 
 def reset_ephemeral_turn(token) -> None:
+    """End the private turn: its scratch folder and everything in it is deleted."""
+    turn = _EPHEMERAL_TURN.get()
     _EPHEMERAL_TURN.reset(token)
+    if isinstance(turn, _PrivateTurn) and turn.scratch:
+        import shutil
+        shutil.rmtree(turn.scratch, ignore_errors=True)
 
 
 def is_ephemeral_turn() -> bool:
     """True inside a private turn, or in a process started for one."""
-    if _EPHEMERAL_TURN.get():
+    if _EPHEMERAL_TURN.get() is not None:
         return True
     return str(os.environ.get(EPHEMERAL_TURN_ENV, "")).strip() == "1"
+
+
+def _sweep_stale_scratch(base: Path) -> None:
+    import shutil
+    import time
+    try:
+        for entry in base.iterdir():
+            try:
+                if time.time() - entry.stat().st_mtime > _STALE_SCRATCH_SECONDS:
+                    shutil.rmtree(entry, ignore_errors=True)
+            except OSError:
+                continue
+    except OSError:
+        return
+
+
+def ephemeral_scratch_dir(name: str = "") -> Optional[Path]:
+    """The folder a private turn's tools write into instead of their usual place under
+    HERMES_HOME (``name`` is a subfolder), or None outside a private turn. Deleted when the
+    turn ends (``reset_ephemeral_turn``; for a process started for one, by its parent)."""
+    env_dir = str(os.environ.get(EPHEMERAL_SCRATCH_ENV, "") or "").strip()
+    turn = _EPHEMERAL_TURN.get()
+    if env_dir and (turn is not None or is_ephemeral_turn()):
+        root = Path(env_dir)
+    elif turn is not None:
+        with turn.lock:
+            if turn.scratch is None:
+                import tempfile
+                base = get_hermes_home() / "cache" / "private"
+                base.mkdir(parents=True, exist_ok=True, mode=0o700)
+                _sweep_stale_scratch(base)
+                turn.scratch = tempfile.mkdtemp(prefix="turn-", dir=str(base))
+        root = Path(turn.scratch)
+    else:
+        return None
+    path = root / name if name else root
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return path
 
 
 def _withhold_ephemeral_text(record: logging.LogRecord) -> None:

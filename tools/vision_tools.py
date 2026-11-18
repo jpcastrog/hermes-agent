@@ -207,6 +207,10 @@ def _secure_cache_dir(new_subpath: str, old_name: str) -> Path:
     the mode to the leaf only, so an intermediate ``cache/`` keeps its default
     mode; it is shared with other subsystems and holds only directory names.
     """
+    from hermes_logging import ephemeral_scratch_dir
+    private = ephemeral_scratch_dir(new_subpath.replace("/", "-"))  # a private chat: deleted at turn end
+    if private is not None:
+        return private
     cache_dir = get_hermes_dir(new_subpath, old_name)
     if _managed_install():
         # Managed mode: the NixOS-configured umask/setgid owns the mode, and

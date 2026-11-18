@@ -21,7 +21,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
-from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, write_hermes_home
+from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, ToolCall, write_hermes_home
 from tests.gateway.test_api_server import _create_app, _make_adapter
 
 SECRET = "my sister's diagnosis is lupus"
@@ -275,7 +275,7 @@ async def test_capabilities_advertise_the_header():
     async with TestClient(TestServer(_create_app(adapter))) as cli:
         resp = await cli.get("/v1/capabilities", headers=AUTH)
         data = await resp.json()
-    assert data["features"]["ephemeral_header"] == "X-Hermes-Ephemeral"
+    assert data["features"]["ephemeral_header"] is True
 
 
 # ── grounding files ──────────────────────────────────────────────────────────
@@ -320,3 +320,88 @@ def test_a_private_turns_helper_is_private_too(fake_model, monkeypatch, private)
     finally:
         child.close()
         parent.close()
+
+
+# ── files tools write during a private turn ──────────────────────────────────
+
+
+def _tool_writes():
+    """Every tool writer a private turn redirects, each given the person's words."""
+    from tools import delegate_tool_results, tool_result_storage, vision_tools, web_tools_truncate
+    from tools.delegation_live_log import live_transcript_root
+
+    paths = [
+        tool_result_storage._write_to_spillover(SECRET * 1000, "toolu_1.txt"),
+        delegate_tool_results._spill_summary_to_file(0, SECRET),
+        web_tools_truncate._store_full_text("https://example.invalid/page", SECRET),
+    ]
+    live = live_transcript_root() / "child.log"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.write_text(SECRET)
+    vision = vision_tools._secure_cache_dir("cache/vision", "temp_vision_images") / "img.img"
+    vision.write_text(SECRET)
+    return [Path(p) for p in paths if p] + [live, vision]
+
+
+def _files_holding_secret() -> list:
+    return [p for p in _home().rglob("*") if p.is_file() and SECRET in p.read_text(errors="ignore")]
+
+
+def test_private_turn_tool_files_are_gone_when_it_ends():
+    from hermes_logging import reset_ephemeral_turn, set_ephemeral_turn
+
+    token = set_ephemeral_turn(True)
+    try:
+        written = _tool_writes()
+        assert len(written) == 5 and all(p.exists() for p in written)
+        # During the turn they sit in the turn's scratch folder, nowhere else.
+        assert all("cache/private/" in str(p) for p in written), written
+    finally:
+        reset_ephemeral_turn(token)
+    assert not any(p.exists() for p in written)
+    assert _files_holding_secret() == []
+
+
+def test_control_ordinary_tool_files_stay():
+    written = _tool_writes()
+    assert len(written) == 5
+    assert not any("cache/private/" in str(p) for p in written)
+    assert len(_files_holding_secret()) == 5
+
+
+@pytest.mark.asyncio
+async def test_private_chat_tool_output_files_are_gone_after_the_turn(fake_model, tmp_path):
+    big = tmp_path / "big.txt"
+    big.write_text((SECRET + "\n") * 20000)
+    fake_model([ToolCall("terminal", {"command": f"cat {big}"}), Text(REPLY)])
+    status, _headers, text = await _post(_body(), PRIVATE)
+    assert status == 200, text
+    spill = _home() / "cache"
+    assert [p for p in spill.rglob("*") if p.is_file() and SECRET in p.read_text(errors="ignore")] == []
+
+
+@pytest.mark.asyncio
+async def test_control_ordinary_chat_tool_output_files_stay(fake_model, tmp_path):
+    big = tmp_path / "big.txt"
+    big.write_text((SECRET + "\n") * 20000)
+    fake_model([ToolCall("terminal", {"command": f"cat {big}"}), Text(REPLY)])
+    status, _headers, text = await _post(_body(), AUTH)
+    assert status == 200, text
+    spill = _home() / "cache"
+    assert [p for p in spill.rglob("*") if p.is_file() and SECRET in p.read_text(errors="ignore")] != []
+
+
+def test_private_turn_moa_traces_go_to_scratch(monkeypatch):
+    import hermes_cli.config as cfg
+    from agent.moa_trace import _traces_enabled_and_dir
+    from hermes_logging import reset_ephemeral_turn, set_ephemeral_turn
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"moa": {"save_traces": True}})
+    assert _traces_enabled_and_dir() == _home() / "moa-traces"  # control
+    token = set_ephemeral_turn(True)
+    try:
+        private = _traces_enabled_and_dir()
+        assert "cache/private/" in str(private)
+    finally:
+        reset_ephemeral_turn(token)
+    assert not private.exists()

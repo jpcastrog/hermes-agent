@@ -64,7 +64,9 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
         import hashlib
         from hermes_constants import get_hermes_dir
         from tools.web_result_cache import _host_slug
-        cache_dir = get_hermes_dir("cache/web", "web_cache")
+        from hermes_logging import ephemeral_scratch_dir
+        # A private chat's pages go to its scratch folder, deleted at turn end.
+        cache_dir = ephemeral_scratch_dir("web") or get_hermes_dir("cache/web", "web_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / f"{_host_slug(url)}-{hashlib.sha256(url.encode('utf-8')).hexdigest()[:10]}.md"
         if len(content) > MAX_STORED_TEXT_CHARS:

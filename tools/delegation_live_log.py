@@ -48,6 +48,10 @@ def live_transcript_root(home: Optional[Path] = None) -> Path:
     (#91996).
     """
     from hermes_constants import get_hermes_dir
+    from hermes_logging import ephemeral_scratch_dir
+    private = ephemeral_scratch_dir("delegation")  # a private chat's helpers: deleted at turn end
+    if private is not None:
+        return private / "live"
     return get_hermes_dir("cache/delegation", "delegation_cache", home=home) / "live"
 
 

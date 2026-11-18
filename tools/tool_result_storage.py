@@ -99,7 +99,10 @@ def _write_to_spillover(content: str, filename: str):
     """
     data = content.encode("utf-8", errors="replace")
     try:
-        spill_dir = get_spillover_dir()
+        # A private chat (X-Hermes-Ephemeral) spills into its own scratch folder, deleted when
+        # the turn ends, so the model can still page the full result during the turn.
+        from hermes_logging import ephemeral_scratch_dir
+        spill_dir = ephemeral_scratch_dir("spillover") or get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         path = spill_dir / filename
         path.write_bytes(data)

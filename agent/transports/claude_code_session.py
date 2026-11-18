@@ -919,6 +919,45 @@ def _ephemeral_env_name() -> str:
         return "HERMES_EPHEMERAL_TURN"
 
 
+def _ephemeral_scratch_env_name() -> str:
+    try:
+        from hermes_logging import EPHEMERAL_SCRATCH_ENV
+        return EPHEMERAL_SCRATCH_ENV
+    except Exception:  # pragma: no cover
+        return "HERMES_EPHEMERAL_SCRATCH"
+
+
+#: A private chat's throwaway config dir left by a crash is removed after this long.
+_STALE_PRIVATE_DIR_SECONDS = 6 * 3600
+
+
+def _make_private_config_dir(base: str) -> str:
+    """A fresh ``private-*`` config dir under ``base`` holding a copy of Hermes's settings file
+    (the operator's settings still apply). Stale ones a crash left behind are removed first."""
+    import shutil
+    _makedirs_or_explain(base)
+    now = time.time()
+    try:
+        for entry in os.scandir(base):
+            if entry.name.startswith("private-") and entry.is_dir(follow_symlinks=False):
+                try:
+                    if now - entry.stat(follow_symlinks=False).st_mtime > _STALE_PRIVATE_DIR_SECONDS:
+                        shutil.rmtree(entry.path, ignore_errors=True)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    path = tempfile.mkdtemp(prefix="private-", dir=base)
+    shared = os.path.join(base, "settings.json")
+    if os.path.isfile(shared):
+        try:
+            shutil.copyfile(shared, os.path.join(path, "settings.json"))
+            os.chmod(os.path.join(path, "settings.json"), 0o600)
+        except OSError:
+            logger.debug("claude-code: could not copy settings into a private config dir", exc_info=True)
+    return path
+
+
 def write_mcp_config(
     *,
     python_executable: Optional[str] = None,
@@ -1145,6 +1184,14 @@ class ClaudeCodeSession:
         tool_scope: Optional["frozenset[str] | set[str] | tuple[str, ...] | list[str]"] = None,
     ) -> None:
         self._config_dir = config_dir or claude_code_home()
+        # A private chat's child (``persist=False``) runs in its own throwaway config dir, so
+        # nothing the CLI keeps there (file-history, sessions, projects, .claude.json) outlives
+        # the turn; ``close`` deletes it. The child signs in with the token in its environment
+        # (``build_child_env``), never from the config dir, so a fresh dir costs no login.
+        self._private_dir: Optional[str] = None
+        if not persist and settings_path is None:
+            self._private_dir = _make_private_config_dir(self._config_dir)
+            self._config_dir = self._private_dir
         self._cwd = cwd or default_workspace_dir()
         self._settings_path = settings_path or os.path.join(
             self._config_dir, "settings.json"
@@ -1448,7 +1495,7 @@ class ClaudeCodeSession:
                 bridge_tools=bridge.allowed_tools if bridge else None,
                 grounding_key=self._grounding_key,
                 tool_scope=self._tool_scope,
-                extra_env=(None if self._persist else {_ephemeral_env_name(): "1"}),
+                extra_env=(None if self._persist else self._private_server_env()),
             )
             self._owns_mcp_config = True
             self._mcp_payload = _LAST_MCP_PAYLOAD
@@ -1650,6 +1697,18 @@ class ClaudeCodeSession:
                 bridge.close()
             except Exception:
                 logger.debug("claude-code: tool bridge close failed", exc_info=True)
+        if self._private_dir:
+            import shutil
+            shutil.rmtree(self._private_dir, ignore_errors=True)
+            self._private_dir = None
+
+    def _private_server_env(self) -> dict[str, str]:
+        """The hermes-tools server of a private chat's child: no log text, and any file a tool
+        must write (spillover, helper logs) goes into the throwaway config dir."""
+        env = {_ephemeral_env_name(): "1"}
+        if self._private_dir:
+            env[_ephemeral_scratch_env_name()] = os.path.join(self._private_dir, "scratch")
+        return env
 
     @staticmethod
     def _sweep_dead_bridges(directory: str) -> None:
